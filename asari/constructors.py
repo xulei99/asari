@@ -63,6 +63,7 @@ class MassGrid:
         '''
         self._initiate_mass_grid()
         sample_ids = self.experiment.valid_sample_ids
+        self.experiment.reference_sample_id = int(self.experiment.reference_sample_id) ###modify here, make sure convert it to an integer to prevent error from R
         sample_ids.pop(self.experiment.reference_sample_id)
         for sid in sample_ids:
             SM = SimpleSample(self.experiment.sample_registry[sid],
