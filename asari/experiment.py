@@ -151,17 +151,24 @@ class ext_Experiment:
             if true, generate annotation files, export CMAP pickle and do QC plot;
             else skip annotating.
         '''
+        ###modify here
+        output_dir = os.path.join(self.parameters['outdir'], 'export')
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        
+        results = {}
+        results['mass_grid'] = self.CMAP.MassGrid    
         self.CMAP.MassGrid.to_csv(
             os.path.join(self.parameters['outdir'], 'export', self.parameters['mass_grid_mapping']) )
         if anno:
             for peak in self.CMAP.FeatureList:
                 peak['id'] = str(peak['id_number'])
-            self.export_CMAP_pickle()
-            self.annotate()
+            results['CMAP_pickle'] = self.export_CMAP_pickle()
+            results['annotate'] = self.annotate()
             self.generate_qc_plot_pdf()
-        self.export_feature_tables()
+        results['feature_tables'] = self.export_feature_tables()
         self.export_log()
-        self.export_readme()
+        return results
 
     def annotate(self):
         '''
@@ -222,6 +229,15 @@ class ext_Experiment:
         outfile = os.path.join(self.parameters['outdir'], 'export', 'epd.pickle')
         with open(outfile, 'wb') as f:
             pickle.dump(EED.dict_empCpds, f, pickle.HIGHEST_PROTOCOL)
+            
+        ###modify herer
+        self.export_peak_annotation(EED.dict_empCpds, self.KCD, 'Feature_annotation')
+
+        if self.sample_registry:                    
+            self.select_unique_compound_features(EED.dict_empCpds)
+
+        # Instead of saving the data, return it:
+        return EED.dict_empCpds
 
     def generate_qc_plot_pdf(self, outfile="qc_plot.pdf"):
         '''
@@ -282,6 +298,8 @@ class ext_Experiment:
         outfile = os.path.join(self.parameters['outdir'], 'export', 'cmap.pickle')
         with open(outfile, 'wb') as f:
             pickle.dump(_export, f, pickle.HIGHEST_PROTOCOL)
+        ###modify here
+        return _export
 
     def load_annotation_db(self, src='hmdb4'):
         '''
@@ -465,8 +483,7 @@ class ext_Experiment:
             good_samples = [sample.name for sample in self.all_samples if sample.is_rt_aligned]
         else:
             good_samples = [sample.name for sample in self.all_samples]
-        filtered_FeatureTable = self.CMAP.FeatureTable[good_samples]          # this fixes order of samples       
-        self.number_of_samples = number_of_samples = len(good_samples)      
+        filtered_FeatureTable = self.CMAP.FeatureTable[good_samples]                       
         # non zero counts
         count = filtered_FeatureTable[filtered_FeatureTable>1].count(axis='columns')
         self.CMAP.FeatureTable['detection_counts'] = count
@@ -474,56 +491,46 @@ class ext_Experiment:
         use_cols = [ 'id_number', 'mz', 'rtime', 'rtime_left_base', 'rtime_right_base', 'parent_masstrack_id', 
                     'peak_area', 'cSelectivity', 'goodness_fitting', 'snr', 'detection_counts' ] + good_samples
         filtered_FeatureTable = self.CMAP.FeatureTable[use_cols]
-        filtered_FeatureTable['mz'] = filtered_FeatureTable['mz'].round(4)
-        filtered_FeatureTable['rtime'] = filtered_FeatureTable['rtime'].round(2)
-        filtered_FeatureTable['rtime_left_base'] = filtered_FeatureTable['rtime_left_base'].round(2)
-        filtered_FeatureTable['rtime_right_base'] = filtered_FeatureTable['rtime_right_base'].round(2)
-        filtered_FeatureTable['cSelectivity'] = filtered_FeatureTable['cSelectivity'].round(2)
-        filtered_FeatureTable['goodness_fitting'] = filtered_FeatureTable['goodness_fitting'].round(2)
+        # Various roundings
+        for column, precision in [("mz", 4), ("rtime", 2), ("rtime_left_base", 2),
+                              ("rtime_right_base", 2), ("cSelectivity", 2),
+                              ("goodness_fitting", 2)]:
+            filtered_FeatureTable[column] = filtered_FeatureTable[column].round(precision)
 
-        outfile = os.path.join(self.parameters['outdir'], 'export', 'full_'+self.parameters['output_feature_table'])
-        filtered_FeatureTable.to_csv(outfile, index=False, sep="\t")
-        print("\nFeature table (%d x %d) was written to %s." %(
-                                filtered_FeatureTable.shape[0], number_of_samples, outfile))
+        full_table = filtered_FeatureTable.copy()
 
-        # extract targeted m/z features
-        if 'target' in self.parameters and self.parameters['target']:  
+        # Targeted extraction
+        targeted_table = None
+        if 'target' in self.parameters and self.parameters['target']:
             matched_list, _, target_unmapped = all_mass_paired_mapping(
-                filtered_FeatureTable['mz'].to_list(), self.parameters['target'], self.parameters['mz_tolerance_ppm']
+            filtered_FeatureTable['mz'].to_list(), self.parameters['target'], self.parameters['mz_tolerance_ppm']
             )
-            print("\nIn targeted extraction, %d target mz values are not found in this dataset: " %len(target_unmapped))
-            print('    ', [self.parameters['target'][ii] for ii in target_unmapped])
             matched_targets = [self.parameters['target'][ii[1]] for ii in matched_list]
             targeted_table = filtered_FeatureTable.iloc[[x[0] for x in matched_list], :]
             targeted_table.insert(0, "query_target", matched_targets)
-            outfile = os.path.join(self.parameters['outdir'], 'targeted_extraction__'+self.parameters['output_feature_table'])
-            targeted_table.to_csv(outfile, index=False, sep="\t")
-            print("Targeted extraction Feature table (%d x %d) was written to %s.\n" %(
-                                targeted_table.shape[0], number_of_samples, outfile))
-
-        outfile = os.path.join(self.parameters['outdir'], 'preferred_'+self.parameters['output_feature_table'])
-        # Some features can have all 0s, filtered here
-        filtered_FeatureTable = filtered_FeatureTable[  filtered_FeatureTable['detection_counts'] > 0 ]
-        filtered_FeatureTable = filtered_FeatureTable[  filtered_FeatureTable['snr']>_snr][
-                                                        filtered_FeatureTable['goodness_fitting']>_peak_shape][
-                                                        filtered_FeatureTable['cSelectivity']>_cSelectivity ]
-        filtered_FeatureTable.to_csv(outfile, index=False, sep="\t")
-        print("\nFiltered Feature table (%d x %d) was written to %s.\n" %(
-                                filtered_FeatureTable.shape[0], number_of_samples, outfile))
-        
+        else:
+            targeted_table = None
+            
+        # Filter preferred features
+        preferred_table = filtered_FeatureTable[(filtered_FeatureTable['detection_counts'] > 0) & 
+                                           (filtered_FeatureTable['snr'] > _snr) & 
+                                           (filtered_FeatureTable['goodness_fitting'] > _peak_shape) & 
+                                           (filtered_FeatureTable['cSelectivity'] > _cSelectivity)]
+    
+        unique_compound_table = None
         if self.parameters['anno']:
-            # in self.selected_unique_features: (empCpd id, neutral_formula, ion_relation)
-            sel = [ii for ii in filtered_FeatureTable.index if filtered_FeatureTable['id_number'][ii] in
-                                        self.selected_unique_features.keys()]
-            unique_compound_table = filtered_FeatureTable.loc[sel, :]
+            sel = [ii for ii in preferred_table.index if preferred_table['id_number'][ii] in self.selected_unique_features.keys()]
+            unique_compound_table = preferred_table.loc[sel, :]
             unique_compound_table.insert(3, "empCpd", [self.selected_unique_features[ii][0] for ii in unique_compound_table['id_number']])
             unique_compound_table.insert(4, "neutral_formula", [self.selected_unique_features[ii][1] for ii in unique_compound_table['id_number']])
             unique_compound_table.insert(5, "ion_relation", [self.selected_unique_features[ii][2] for ii in unique_compound_table['id_number']])
-            
-            outfile = os.path.join(self.parameters['outdir'], 'export', 'unique_compound__'+self.parameters['output_feature_table'])
-            unique_compound_table.to_csv(outfile, index=False, sep="\t")
-            print("Unique compound table (%d x %d) was written to %s.\n" %(
-                                unique_compound_table.shape[0], number_of_samples, outfile))
+    
+        return {
+        "full_table": full_table,
+        "targeted_table": targeted_table,
+        "preferred_table": preferred_table,
+        "unique_compound_table": unique_compound_table
+        }
 
         
     def export_log(self):
